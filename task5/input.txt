@@ -1,0 +1,7 @@
+6
+4 echo Hello, World.
+5 ls
+8 ls -al
+4 pwd
+2 gcc -o hello hello.c
+3 ./hello
