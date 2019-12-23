@@ -1,85 +1,158 @@
-#include<sys/stat.h>
-#include<sys/msg.h>
-#include<stdio.h>
-#include<stdlib.h>
-#include<sys/sem.h>
-#include<sys/types.h>
-#include<sys/ipc.h>
-#include"split.h"
-#include<string.h>
-#include<errno.h>
-#include<unistd.h>
-#include<fcntl.h>
-#include<signal.h>
-#define NAMEFILE "washer.txt"
-#define MAX_SIZE 100
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/sem.h>
+#include <unistd.h>
+#include <sys/errno.h>
+#include <string.h>
+
+#define MAX_STRING_SIZE 100
 #define TABLE_LIMIT 2
 
+typedef struct Dishes
+{
+    char* name;
+    unsigned int wash_time;
+    unsigned int dry_time;
+} Dish;
 
-void File_Read(FILE *mf, char *string){
-    mf = fopen(NAMEFILE, "r");
-    char *estr;
-    char str[MAX_SIZE] = {};
-    do{
-        estr = fgets(str, MAX_SIZE, mf);
-        if(estr == NULL){
-            break;
-        }
-        strcat(string, str);
-    }while(estr);
-    fclose(mf);
+//the place for different experiments
+Dish plate = {"plate",1,6};
+Dish cup = {"cup",1,5};
+Dish knife = {"knife",1,4};
+Dish spoon = {"spoon",1,4};
+
+Dish DefineDish(char* name)
+{
+    if (!strcmp(name, "plate"))
+        return plate;
+    if (!strcmp(name, "cup"))
+        return cup;
+    if (!strcmp(name, "knife"))
+    return knife;
+    if (!strcmp(name, "spoon"))
+        return spoon;
+    exit(5);
 }
 
-int main(){
-    int semid1;
-    int msgid;
-    int len, maxlen;
-    struct mymsgbuf{
-        long mtype;
-        char mtext[MAX_SIZE];
-    } mybuf;
-    char pathname[] = "a.c";
+void SemCreate(int *semid, int count)
+{
+    char pathname[] = "key";
+
     key_t key;
-    struct sembuf buf;
-    if((key = ftok(pathname, 0)) < 0){
+
+    if((key = ftok(pathname,0)) < 0){
+        printf("Can\'t generate key\n");
         exit(-1);
     }
-    if((semid1 = semget(key, 1, 0666 | IPC_CREAT)) < 0){
+
+    if((*semid = semget(key, count, 0666 | IPC_CREAT)) < 0)
+    {
+        printf("Can\'t get semid\n");
         exit(-1);
     }
-    msgid = msgget(key, 0666 | IPC_CREAT);
-    int i;
-    char string[MAX_SIZE] = {};
-    int tokensCount = 0;
-    char delimiters[2] = {':','\n'};
-    FILE *mf;
-    File_Read(mf, string);
-    char **tokens;
-    tokens = (char**)calloc(MAX_SIZE, sizeof(char*));
-    for(i = 0; i < MAX_SIZE; i++){
-        tokens[i] = (char*)calloc(MAX_SIZE, sizeof(char));
+}
+
+
+void SemOperation(int semid, short operation, unsigned short sem_mumber)
+{
+    struct sembuf mybuf;
+
+    mybuf.sem_op = operation;
+    mybuf.sem_flg = 0;
+    mybuf.sem_num = sem_mumber;
+    semop(semid, &mybuf, 1);
+}
+
+int main(void)
+{
+    int semid;
+    SemCreate(&semid, 1);
+    SemOperation(semid, TABLE_LIMIT, 0);
+
+    int msqid;
+    char pathname[]="help";
+    key_t  key;
+    size_t len = sizeof(Dish);
+
+    typedef struct mymsgbuf
+    {
+        long mtype;
+        Dish current_dish;
+    } msg_buf;
+
+
+    key = ftok(pathname, 0);
+
+    if ((msqid = msgget(key, 0666 | IPC_CREAT)) < 0){
+        printf("Can\'t get msqid\n");
+        exit(-1);
     }
-    Split(string, delimiters, &tokens, &tokensCount);
-    buf.sem_op = TABLE_LIMIT - 1;
-    buf.sem_flg = 0;
-    buf.sem_num = 0;
-    semop(semid1, &buf, 1);
-    for(i = 0; i < tokensCount; i += 2){
-        sleep(atoi(tokens[i+1]));
-        printf(" washed %s \n", tokens[i]);
-        mybuf.mtype = 1;
-        strcpy(mybuf.mtext, tokens[i]);
-        msgsnd(msgid, &mybuf, sizeof(struct mymsgbuf) - sizeof(long), 0);
-        printf(" send %s\n", mybuf.mtext);
-        buf.sem_op = -1;
-        buf.sem_flg = 0;
-        buf.sem_num = 0;
-        semop(semid1, &buf, 1);
+
+    pid_t pid = fork(); // parent - washer, child - dryer
+    if ( pid == 0)
+    {
+        msg_buf rcv_buf;
+        while (1)
+        {
+            if (msgrcv(msqid, &rcv_buf, len, 1, 0) < 0)
+            {
+                printf("Can\'t receive message from queue\n");
+                exit(-1);
+            }
+            Dish current_dish = rcv_buf.current_dish;
+            printf("Dryer took the %s.\n", current_dish.name);
+            sleep(current_dish.dry_time);
+            printf("Dryer finished %s.\n", current_dish.name);
+            SemOperation(semid, 1, 0);
+        }
     }
-    mybuf.mtype = 228;
-    len = 0;
-    msgsnd(msgid, &mybuf, len, 0);
-    free(tokens);
+    else
+    {
+        FILE *file = fopen("dishh.txt","r");
+        int N;
+        fscanf(file,"%d", &N);
+        char name[MAX_STRING_SIZE];
+        int count;
+        Dish current_dish;
+        msg_buf snd_buf;
+        for (int i = 0; i < N; ++i) {
+            fscanf(file, "%s%d", name, &count);
+            current_dish = DefineDish(name);
+            for (int j = 0; j < count; ++j) {
+                sleep(current_dish.wash_time);
+
+                //sending
+                snd_buf.mtype = 1;
+        snd_buf.current_dish = current_dish;
+                if (msgsnd(msqid, &snd_buf, len, 0) < 0)
+                {
+                    printf("Can\'t send message to queue\n");
+                    msgctl(msqid, IPC_RMID, (struct msqid_ds *) NULL);
+                    exit(-1);
+                }
+
+                //printf("Washer put the %s on the table.\n", current_dish.name);
+                printf("Washer put the %s (%i) on the table.\n", current_dish.name, j + 1);
+
+                SemOperation(semid, -1, 0);
+
+            }
+         if (i == N -1 )
+             {
+                snd_buf.mtype = 228;
+                printf("Washer done\n");
+             }
+        }
+        fclose(file);
+        int status;
+        wait(&status);
+    exit(0);
+    }
+
     return 0;
 }
 
